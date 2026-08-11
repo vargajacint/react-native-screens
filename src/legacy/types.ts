@@ -158,6 +158,26 @@ export interface ScreenProps extends ViewProps {
    */
   freezeOnBlur?: boolean | undefined;
   /**
+   * Whether unfreezing a screen that is currently off-screen should be deferred until
+   * the screen is about to come back on screen. Defaults to `false`.
+   *
+   * By default a screen unfreezes as soon as the conditions that froze it stop applying
+   * (`shouldFreeze` becoming `false` or `activityState` leaving `0`), which follows the
+   * screen's position in the navigation hierarchy rather than its visibility. As a result,
+   * a screen lying deeper in a stack unfreezes - and re-renders its whole subtree - while
+   * it is still fully covered by other screens.
+   *
+   * When this prop is enabled and the freeze conditions stop applying while the screen is
+   * off-screen, the screen stays frozen until its native will-appear event is delivered,
+   * i.e. until the screen actually starts coming back on screen. This includes the start
+   * of the interactive back gesture, so the gesture still reveals a live screen. Note that
+   * as long as the screen stays frozen its subtree does not render updates - e.g. animated
+   * values driven from within it remain stale until the screen is revealed.
+   *
+   * Takes effect only when freezing is in use (see `freezeOnBlur` and `enableFreeze()`).
+   */
+  deferUnfreezeUntilVisible?: boolean | undefined;
+  /**
    * Boolean indicating whether the swipe gesture should work on whole screen. The behavior depends on iOS version.
    *
    * For iOS prior to 26, swiping with this option results in the same transition animation as `simple_push` by default.

@@ -1,7 +1,13 @@
 'use client';
 
 import React from 'react';
-import { Animated, Platform, View } from 'react-native';
+import {
+  Animated,
+  Platform,
+  View,
+  type NativeSyntheticEvent,
+  type TargetedEvent,
+} from 'react-native';
 
 import TransitionProgressContext from '../TransitionProgressContext';
 import DelayedFreeze from './helpers/DelayedFreeze';
@@ -89,8 +95,44 @@ export const InnerScreen = React.forwardRef<ScreenInstance, ScreenProps>(
       enabled = screensEnabled(),
       freezeOnBlur = freezeEnabled(),
       shouldFreeze,
+      deferUnfreezeUntilVisible = false,
       ...rest
     } = props;
+
+    const resolvedActivityState = resolveActivityState(
+      props.activityState,
+      props.active,
+    );
+
+    const freezeCondition =
+      freezeOnBlur &&
+      (shouldFreeze !== undefined ? shouldFreeze : resolvedActivityState === 0);
+    const prevFreezeCondition = usePrevious(freezeCondition);
+
+    // Off-screen according to native appearance events; a screen mounted with
+    // the freeze condition already applying starts as off-screen.
+    const isOffscreenRef = React.useRef(freezeCondition);
+
+    // Keeps the subtree frozen after the freeze condition stops applying, until
+    // the screen is about to come back on screen.
+    const [unfreezeDeferred, setUnfreezeDeferred] = React.useState(false);
+
+    const freezeJustTurnedOff =
+      prevFreezeCondition === true && !freezeCondition;
+    const shouldDeferUnfreeze =
+      deferUnfreezeUntilVisible &&
+      !unfreezeDeferred &&
+      freezeJustTurnedOff &&
+      isOffscreenRef.current;
+    const shouldResetDeferral = !deferUnfreezeUntilVisible && unfreezeDeferred;
+
+    if (shouldDeferUnfreeze) {
+      // State is adjusted during render: unfreezing is synchronous, so the hold
+      // must apply in the same render in which the freeze condition turns off.
+      setUnfreezeDeferred(true);
+    } else if (shouldResetDeferral) {
+      setUnfreezeDeferred(false);
+    }
 
     // To maintain default behavior of formSheet stack presentation style and to have reasonable
     // defaults for new medium-detent iOS API we need to set defaults here
@@ -202,9 +244,41 @@ export const InnerScreen = React.forwardRef<ScreenInstance, ScreenProps>(
         setRef(ref);
       };
 
-      const freeze =
-        freezeOnBlur &&
-        (shouldFreeze !== undefined ? shouldFreeze : activityState === 0);
+      const freeze = freezeCondition || unfreezeDeferred;
+
+      // Will-appear marks the moment the screen starts coming back on screen;
+      // appear covers transitions where will-appear was not delivered.
+      const releaseDeferredUnfreeze = () => {
+        isOffscreenRef.current = false;
+        if (unfreezeDeferred) {
+          setUnfreezeDeferred(false);
+        }
+      };
+
+      const handleWillAppear = (e: NativeSyntheticEvent<TargetedEvent>) => {
+        releaseDeferredUnfreeze();
+        onWillAppear?.(e);
+      };
+
+      const handleAppear = (e: NativeSyntheticEvent<TargetedEvent>) => {
+        releaseDeferredUnfreeze();
+        onAppear?.(e);
+      };
+
+      const handleDisappear = (e: NativeSyntheticEvent<TargetedEvent>) => {
+        isOffscreenRef.current = true;
+        onDisappear?.(e);
+      };
+
+      // Installed only when `deferUnfreezeUntilVisible` is enabled - by default
+      // user callbacks are passed through untouched.
+      const appearanceCallbacks = deferUnfreezeUntilVisible
+        ? {
+            onWillAppear: handleWillAppear,
+            onAppear: handleAppear,
+            onDisappear: handleDisappear,
+          }
+        : { onWillAppear, onAppear, onDisappear };
 
       return (
         <DelayedFreeze freeze={freeze}>
@@ -215,9 +289,13 @@ export const InnerScreen = React.forwardRef<ScreenInstance, ScreenProps>(
              * our Public API. To see reasoning go to this PR:
              * https://github.com/software-mansion/react-native-screens/pull/2423#discussion_r1810616995
              */
-            onAppear={onAppear as NativeProps['onAppear']}
-            onDisappear={onDisappear as NativeProps['onDisappear']}
-            onWillAppear={onWillAppear as NativeProps['onWillAppear']}
+            onAppear={appearanceCallbacks.onAppear as NativeProps['onAppear']}
+            onDisappear={
+              appearanceCallbacks.onDisappear as NativeProps['onDisappear']
+            }
+            onWillAppear={
+              appearanceCallbacks.onWillAppear as NativeProps['onWillAppear']
+            }
             onWillDisappear={onWillDisappear as NativeProps['onWillDisappear']}
             onGestureCancel={
               (onGestureCancel as NativeProps['onGestureCancel']) ??
@@ -339,3 +417,18 @@ const Screen = React.forwardRef<ScreenInstance, ScreenProps>((props, ref) => {
 Screen.displayName = 'Screen';
 
 export default Screen;
+
+// Mirrors the legacy `active` -> `activityState` fallback used in the render
+// path, so the freeze condition can be computed ahead of it.
+function resolveActivityState(
+  activityState: ScreenProps['activityState'],
+  active: ScreenProps['active'],
+): ScreenProps['activityState'] {
+  if (activityState !== undefined) {
+    return activityState;
+  }
+  if (active !== undefined) {
+    return active !== 0 ? 2 : 0;
+  }
+  return undefined;
+}
